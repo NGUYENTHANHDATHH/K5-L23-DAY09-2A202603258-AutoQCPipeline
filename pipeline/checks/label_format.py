@@ -21,9 +21,40 @@ Gợi ý
 - `iou_xywh(a, b)` có sẵn trong common.py.
 - Ngưỡng nằm trong `cfg["label_format"]` — đừng viết cứng số vào code.
 """
-from ..common import ERROR, WARN, Issue, iou_xywh, parse_yolo_line  # noqa: F401
+from ..common import ERROR, WARN, Issue, iou_xywh, parse_yolo_line
 
 
 def run(ds, cfg):
-    # TODO: duyệt từng file nhãn, từng dòng
-    raise NotImplementedError("check label_format chưa làm")
+    c = cfg["label_format"]
+    issues = []
+    for lp in ds.label_files():
+        stem, size, seen = lp.stem, ds.image_size(lp.stem), []
+
+        def add(sev, code, n, msg, **extra):
+            issues.append(Issue("label_format", sev, code, stem, msg, line=n, extra=extra))
+
+        for n, ln in ds.read_label_lines(stem) or []:
+            try:
+                k, x, y, w, h = parse_yolo_line(ln)
+            except ValueError as e:
+                add(ERROR, "BAD_FORMAT", n, f"sai định dạng: {e}")
+                continue
+            if not 0 <= k < len(ds.classes):
+                add(ERROR, "BAD_CLASS_ID", n, f"id lớp {k} ngoài 0..{len(ds.classes) - 1}")
+                continue
+            if w <= 0 or h <= 0:
+                add(ERROR, "BOX_ZERO", n, f"box rộng/cao <= 0 (w={w}, h={h})")
+                continue
+            over = max(-(x - w / 2), x + w / 2 - 1, -(y - h / 2), y + h / 2 - 1)
+            if over > c["overflow_tol"]:
+                add(ERROR, "BOX_OUT_OF_IMAGE", n, f"box tràn ảnh {over:.4f}", overflow=round(over, 6))
+            dup = next((m for m, kb, b in seen if kb == k and iou_xywh(b, (x, y, w, h)) > c["dup_box_iou"]), None)
+            if dup:
+                add(ERROR, "DUP_BOX", n, f"trùng box dòng {dup} (cùng lớp)", of_line=dup)
+            seen.append((n, k, (x, y, w, h)))
+            short = min(w * size[0], h * size[1]) if size else None
+            if short is not None and short < c["min_box_px"]:
+                add(WARN, "BOX_TINY", n, f"cạnh ngắn {short:.1f}px < {c['min_box_px']}px")
+            if w * h > c["max_box_frac"]:
+                add(WARN, "BOX_HUGE", n, f"box chiếm {w * h:.2f} diện tích ảnh > {c['max_box_frac']}")
+    return issues

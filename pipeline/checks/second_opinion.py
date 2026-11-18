@@ -35,10 +35,55 @@ Gợi ý
 - `iou_xywh` có sẵn. Dòng nhãn hỏng không được làm script chết (dùng `ds.valid_boxes` và `parse_yolo_line` trong try).
 - Kết quả phụ thuộc mạnh vào ngưỡng: calibrate chúng ở Bước 3 thay vì đoán.
 """
-from ..common import WARN, Issue, iou_xywh, parse_yolo_line  # noqa: F401
-from ..model_cache import get_preds  # noqa: F401
+from ..common import WARN, Issue, iou_xywh, parse_yolo_line
+from ..model_cache import get_preds
+
+
+def _labels(ds, stem):
+    """[(số dòng gốc, lớp, box)] các dòng nhãn hợp lệ — giữ số dòng cho POSSIBLE_FALSE_POS."""
+    out = []
+    for n, ln in ds.read_label_lines(stem) or []:
+        try:
+            k, *box = parse_yolo_line(ln)
+        except ValueError:
+            continue                                   # dòng hỏng: label_format báo
+        if 0 <= k < len(ds.classes):
+            out.append((n, k, box))
+    return out
 
 
 def run(ds, cfg, preds=None):
-    # TODO
-    raise NotImplementedError("check second_opinion chưa làm")
+    c = cfg["second_opinion"]
+    preds = get_preds(ds, cfg, "checker") if preds is None else preds
+    issues = []
+    for p in ds.image_files():
+        stem, size = p.stem, ds.image_size(p.stem)
+        if stem not in preds or not ds.label_path(stem).exists() or not size:
+            continue
+        W, H = size
+        L = _labels(ds, stem)
+
+        def add(code, msg, line=None, **extra):
+            issues.append(Issue("second_opinion", WARN, code, stem, msg, line=line, extra=extra))
+
+        for k, conf, *box in preds[stem]:
+            if conf < c["conf"] or box[2] * W * box[3] * H < c["min_area_px"]:
+                continue
+            cands = [(iou_xywh(box, b), kl) for _, kl, b in L]
+            cands = [(iou, kl) for iou, kl in cands if iou >= c["iou_missing"]]
+            same = max((iou for iou, kl in cands if kl == k), default=None)
+            other = max(((iou, kl) for iou, kl in cands if kl != k), default=None)
+            if not cands:
+                add("POSSIBLE_MISSING", f"model thấy lớp {k} (conf {conf:.2f}) nhưng không có box nhãn nào", conf=conf, cls=k, box=box)
+            elif same is not None:
+                if same < c["iou_loose"]:
+                    add("POSSIBLE_LOOSE_BOX", f"box lớp {k} lệch/lỏng: IoU {same:.2f} < {c['iou_loose']}", conf=conf, iou=round(same, 4))
+            elif other[0] >= c["iou_match"]:
+                add("POSSIBLE_WRONG_CLASS", f"nhãn lớp {other[1]}, model nói lớp {k} (IoU {other[0]:.2f})", conf=conf, iou=round(other[0], 4), label_cls=other[1], pred_cls=k)
+
+        strong = [box for _, conf, *box in preds[stem] if conf >= c["fp_conf"]]   # không lọc diện tích
+        for n, kl, b in L:
+            best = max((iou_xywh(b, r) for r in strong), default=0.0)
+            if best < c["iou_missing"]:
+                add("POSSIBLE_FALSE_POS", f"box lớp {kl} không khớp vật nào model thấy (IoU tốt nhất {best:.2f})", line=n, iou=round(best, 4))
+    return issues
