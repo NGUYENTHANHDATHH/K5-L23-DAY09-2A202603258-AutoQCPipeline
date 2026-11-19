@@ -42,7 +42,23 @@ Từ `02_error_list_v1` (211 issue trên 149 ảnh; mẫu số 224 ảnh quét) 
 
 ## 5. Train: raw vs clean (tùy chọn, chấm riêng)
 
-**Chưa chạy.** Phần train tùy chọn cần push repo public rồi chạy notebook trên Colab; tôi chưa làm phần này nên không có số liệu và không đưa ra kết luận raw vs clean.
+Colab T4, `yolo26n.pt`, 20 epoch, batch 16, imgsz 640, seed 0 và 1. Cùng val (`gold_val`, 40 ảnh) và cùng test (100 ảnh, 387 box). Chỉ khác dữ liệu train: `raw` 224 ảnh nhãn gốc, `clean` 202 ảnh của `clean_v1` (`manifest_sha1` và `config_sha1` trong `results/*.json` khớp bản export và config đã nộp). Bảng do `scripts/summarize_results.py` sinh:
+
+| biến thể | #ảnh train | số seed | map50 (TB ± độ lệch) | map50_95 (TB ± độ lệch) | precision (TB ± độ lệch) | recall (TB ± độ lệch) |
+|---|---|---|---|---|---|---|
+| raw | 224 | 2 | 0.726 ± 0.000 | 0.512 ± 0.004 | 0.764 ± 0.061 | 0.649 ± 0.028 |
+| clean | 202 | 2 | 0.701 ± 0.025 | 0.487 ± 0.008 | 0.759 ± 0.003 | 0.625 ± 0.019 |
+
+**So với nhiễu:** chênh mAP50 (clean − raw) = **−0.025**, đúng bằng độ lệch chuẩn giữa 2 seed của clean (0.025). Hai seed clean cách nhau 0.035 (0.718 và 0.683), lớn hơn cả khoảng cách giữa seed tốt của clean và raw (0.726 − 0.718 = 0.008). Với 2 seed và 100 ảnh test, **chưa kết luận được** clean tốt hơn hay kém hơn raw. Điều trung thực có thể nói là: số liệu này **không** cho thấy làm sạch giúp tăng mAP.
+
+**Theo lớp:** person gần như bằng nhau (raw 0.813/0.832, clean 0.816/0.830). Chênh lớn nhất ở truck: raw 0.657/0.640, clean 0.590/0.486, dù clean có **nhiều** box truck hơn (41 so với 32). Test chỉ có 24 box truck và 27 box bus, nên một vài box đoán sai đã đủ làm AP lớp đó dao động mạnh.
+
+**Giả thuyết và cách kiểm:**
+1. **Rò rỉ test thổi phồng raw.** `raw` còn 5 ảnh trùng ảnh test (`LEAK_TEST`: test_009, 033, 039, 044, 085), `clean` đã loại. Model raw đã "thấy" 5% ảnh test lúc train. *Kiểm:* đánh giá cả hai model trên test bỏ 5 ảnh đó; nếu khoảng cách thu hẹp thì một phần lợi thế của raw là giả.
+2. **Nhãn truck/car của clean vẫn bẩn.** 38 ảnh chưa được người duyệt vẫn giữ nhãn máy, và `POSSIBLE_WRONG_CLASS` có điểm mù car/truck (mục 4, điểm mù 2; CVAT tìm thêm 3 ảnh nhầm truck mà pipeline không cờ). *Kiểm:* train thêm biến thể `oracle` (nhãn người, cùng ảnh với clean) làm chặn trên; nếu oracle cũng không hơn raw thì vấn đề nằm ở dữ liệu ít và test nhỏ, không phải ở nhãn.
+3. **Ít dữ liệu hơn và nhiễu lớn.** Clean ít hơn 22 ảnh (−10%), và độ lệch giữa seed (đến 0.035 mAP50) cùng cỡ với hiệu ứng cần đo. *Kiểm:* chạy ≥ 5 seed mỗi biến thể và so khoảng tin cậy.
+
+**Việc tiếp theo:** chạy lại với ≥ 5 seed và thêm biến thể `oracle`, đánh giá trên test bỏ 5 ảnh rò rỉ, rồi mới kết luận về tác dụng của làm sạch.
 
 ## 6. Quyết định và ghi chú AI
 
